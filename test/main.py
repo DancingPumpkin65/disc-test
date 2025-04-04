@@ -45,17 +45,32 @@ class MusicBot(commands.Cog):
         self.ytdl = YoutubeDL(YTDL_OPTIONS)
         
     def search(self, query):
-        with YoutubeDL(YTDL_OPTIONS) as ydl:
-            try: 
-                requests.get(query)
-                info = ydl.extract_info(query, download=False)
-            except:
-                info = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
-            
-            return {
-                'source': info['formats'][0]['url'],
-                'title': info['title']
-            }
+        try:
+            with YoutubeDL(YTDL_OPTIONS) as ydl:
+                try:
+                    # Try treating the query as a direct URL
+                    requests.get(query)
+                    info = ydl.extract_info(query, download=False)
+                except Exception:
+                    # If not a URL, search on YouTube
+                    info = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
+                
+                # Get the best audio stream URL
+                for format in info['formats']:
+                    if format.get('acodec') != 'none' and format.get('vcodec') == 'none':
+                        audio_url = format['url']
+                        break
+                else:
+                    # Fallback to the first format if no audio-only stream is found
+                    audio_url = info['formats'][0]['url']
+                
+                return {
+                    'source': audio_url,
+                    'title': info['title']
+                }
+        except Exception as e:
+            print(f"Error in search: {e}")
+            raise e
 
     @commands.command()
     async def play(self, ctx, *, query: str):
@@ -97,7 +112,6 @@ class MusicBot(commands.Cog):
 
     @commands.command()
     async def skip(self, ctx):
-        """Skip the current song"""
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
             await ctx.send("Skipped current song.")
@@ -105,7 +119,6 @@ class MusicBot(commands.Cog):
 
     @commands.command()
     async def stop(self, ctx):
-        """Stop playback and clear queue"""
         self.queue.clear()
         if ctx.voice_client:
             ctx.voice_client.stop()
@@ -118,7 +131,6 @@ class MusicBot(commands.Cog):
 
     @commands.command()
     async def queue(self, ctx):
-        """Show current queue"""
         if not self.queue:
             return await ctx.send("Queue is empty.")
         
