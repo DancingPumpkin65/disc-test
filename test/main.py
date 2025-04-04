@@ -1,10 +1,11 @@
 import discord
 from discord.ext import commands
+from pytube import YouTube
 import asyncio
 from dotenv import load_dotenv
 import os
-from youtube_dl import YoutubeDL
-import requests
+import json
+import http.cookiejar
 
 # Load environment variables
 load_dotenv()
@@ -20,76 +21,47 @@ FFMPEG_OPTIONS = {
     'options': '-vn'
 }
 
-# Configure youtube_dl options
-YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
-    'extractaudio': True,
-    'audioformat': 'mp3',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-    'restrictfilenames': True,
-    'noplaylist': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': False,
-    'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'auto',
-    'source_address': '0.0.0.0',
-}
+# YouTube cookie configuration
+YOUTUBE_COOKIES_FILE = os.getenv('YOUTUBE_COOKIES_FILE')
 
 class MusicBot(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.queue = []
         self.current_song = None
-        self.ytdl = YoutubeDL(YTDL_OPTIONS)
-        
-    def search(self, query):
-        try:
-            with YoutubeDL(YTDL_OPTIONS) as ydl:
-                try:
-                    # Try treating the query as a direct URL
-                    requests.get(query)
-                    info = ydl.extract_info(query, download=False)
-                except Exception:
-                    # If not a URL, search on YouTube
-                    info = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
-                
-                # Get the best audio stream URL
-                for format in info['formats']:
-                    if format.get('acodec') != 'none' and format.get('vcodec') == 'none':
-                        audio_url = format['url']
-                        break
-                else:
-                    # Fallback to the first format if no audio-only stream is found
-                    audio_url = info['formats'][0]['url']
-                
-                return {
-                    'source': audio_url,
-                    'title': info['title']
-                }
-        except Exception as e:
-            print(f"Error in search: {e}")
-            raise e
+        self.cookies = None
+        if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+            try:
+                self.cookies = http.cookiejar.MozillaCookieJar(YOUTUBE_COOKIES_FILE)
+                self.cookies.load()
+                print("YouTube cookies loaded successfully")
+            except Exception as e:
+                print(f"Error loading cookies: {e}")
 
     @commands.command()
-    async def play(self, ctx, *, query: str):
-        """Play audio from YouTube URL or search query"""
+    async def play(self, ctx, *, url: str):
+        """Play audio from YouTube URL"""
         if not ctx.author.voice:
             return await ctx.send("You must be in a voice channel to use this command.")
         
         voice_client = ctx.voice_client or await ctx.author.voice.channel.connect()
         
         try:
-            # Search for the video
-            await ctx.send(f"🔎 Searching for: **{query}**...")
-            song_info = self.search(query)
+            # Create YouTube object with cookies
+            yt = YouTube(url)
+            if self.cookies:
+                yt.bypass_age_gate()
+                yt.use_oauth = True
+                yt.allow_oauth_cache = True
+                yt._http = self.cookies
+                
+            audio_stream = yt.streams.filter(only_audio=True).first()
+            if not audio_stream:
+                return await ctx.send("Could not find audio stream.")
             
-            # Add to queue and notify
-            self.queue.append((song_info['source'], song_info['title']))
-            await ctx.send(f"Added to queue: **{song_info['title']}**")
+            self.queue.append((audio_stream.url, yt.title))
+            await ctx.send(f"Added to queue: **{yt.title}**")
             
-            # Play if not already playing something
             if not voice_client.is_playing():
                 await self._play_next(ctx)
                 
@@ -97,7 +69,7 @@ class MusicBot(commands.Cog):
             error_message = f"Error: {str(e)}"
             print(f"YouTube error: {str(e)}")
             await ctx.send(error_message)
-            await ctx.send("Try using a different search term or YouTube URL.")
+            await ctx.send("Try using a different YouTube URL or check if the video is available.")
 
     async def _play_next(self, ctx):
         if self.queue:
@@ -112,6 +84,7 @@ class MusicBot(commands.Cog):
 
     @commands.command()
     async def skip(self, ctx):
+        """Skip the current song"""
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
             await ctx.send("Skipped current song.")
@@ -119,6 +92,7 @@ class MusicBot(commands.Cog):
 
     @commands.command()
     async def stop(self, ctx):
+        """Stop playback and clear queue"""
         self.queue.clear()
         if ctx.voice_client:
             ctx.voice_client.stop()
@@ -131,6 +105,7 @@ class MusicBot(commands.Cog):
 
     @commands.command()
     async def queue(self, ctx):
+        """Show current queue"""
         if not self.queue:
             return await ctx.send("Queue is empty.")
         
