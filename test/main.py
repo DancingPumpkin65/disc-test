@@ -1,9 +1,10 @@
 import discord
 from discord.ext import commands
-from pytube import YouTube
 import asyncio
 from dotenv import load_dotenv
 import os
+from youtube_dl import YoutubeDL
+import requests
 
 # Load environment variables
 load_dotenv()
@@ -19,34 +20,69 @@ FFMPEG_OPTIONS = {
     'options': '-vn'
 }
 
+# Configure youtube_dl options
+YTDL_OPTIONS = {
+    'format': 'bestaudio/best',
+    'extractaudio': True,
+    'audioformat': 'mp3',
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0',
+}
+
 class MusicBot(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.queue = []
         self.current_song = None
+        self.ytdl = YoutubeDL(YTDL_OPTIONS)
+        
+    def search(self, query):
+        with YoutubeDL(YTDL_OPTIONS) as ydl:
+            try: 
+                requests.get(query)
+                info = ydl.extract_info(query, download=False)
+            except:
+                info = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
+            
+            return {
+                'source': info['formats'][0]['url'],
+                'title': info['title']
+            }
 
     @commands.command()
-    async def play(self, ctx, *, url: str):
-        """Play audio from YouTube URL"""
+    async def play(self, ctx, *, query: str):
+        """Play audio from YouTube URL or search query"""
         if not ctx.author.voice:
             return await ctx.send("You must be in a voice channel to use this command.")
         
         voice_client = ctx.voice_client or await ctx.author.voice.channel.connect()
         
         try:
-            yt = YouTube(url)
-            audio_stream = yt.streams.filter(only_audio=True).first()
-            if not audio_stream:
-                return await ctx.send("Could not find audio stream.")
+            # Search for the video
+            await ctx.send(f"🔎 Searching for: **{query}**...")
+            song_info = self.search(query)
             
-            self.queue.append((audio_stream.url, yt.title))
-            await ctx.send(f"Added to queue: **{yt.title}**")
+            # Add to queue and notify
+            self.queue.append((song_info['source'], song_info['title']))
+            await ctx.send(f"Added to queue: **{song_info['title']}**")
             
+            # Play if not already playing something
             if not voice_client.is_playing():
                 await self._play_next(ctx)
                 
         except Exception as e:
-            await ctx.send(f"Error: {str(e)}")
+            error_message = f"Error: {str(e)}"
+            print(f"YouTube error: {str(e)}")
+            await ctx.send(error_message)
+            await ctx.send("Try using a different search term or YouTube URL.")
 
     async def _play_next(self, ctx):
         if self.queue:
